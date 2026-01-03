@@ -47,7 +47,7 @@ IDLE -> SCANNING -> CONNECTING -> CONNECTED
           ^              |
           |              v
         DISCONNECTED <----
-```md
+```
 ---
 
 ## BLE Robustness: Heartbeat & Watchdog
