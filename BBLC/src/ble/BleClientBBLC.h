@@ -7,6 +7,8 @@
 #include <vector>
 
 #include "ble/BleStatus.h"   // pour BleState
+#include "ble/BleHeartbeat.h"
+#include "ble/BleWatchdog.h"
 
 struct BleAdvertiserInfo {
     NimBLEAddress address;
@@ -32,7 +34,6 @@ public:
     void startScan();
     void disconnect();
     bool sendCommand(const uint8_t* data, size_t len, bool response = false);
-    static void onStatusNotify(NimBLERemoteCharacteristic* chr, uint8_t* data, size_t len, bool isNotify);
 
     BleState getState() const;
 
@@ -67,11 +68,15 @@ private:
 
     bool updateAdvertiser(const NimBLEAdvertisedDevice* device);
     bool setupRemoteCharacteristics();
+    void onStatusNotify(NimBLERemoteCharacteristic* chr, uint8_t* data, size_t len, bool isNotify);
 
 private:
     // ===== State =====
     BleState state_ = BleState::BOOT;
     StateCallback stateCallback_;
+
+    BleHeartbeat heartbeat_;
+    BleWatchdog watchdog_;
 
     // ===== BLE objects =====
     NimBLEClient* client_ = nullptr;

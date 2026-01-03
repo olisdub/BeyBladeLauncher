@@ -3,6 +3,15 @@
 
 // TAGs (same spirit as BBLC)
 static const char* TAG = "BBLH_BLE";
+static constexpr uint32_t HEARTBEAT_INTERVAL_MS = 3000;
+static constexpr uint32_t WATCHDOG_TIMEOUT_MS = 8000;
+static constexpr uint32_t WATCHDOG_WARN_MS = 2000;
+
+namespace {
+void watchdogLog(const char* msg) {
+    ESP_LOGW(TAG, "%s", msg);
+}
+}
 
 // UUIDs (keep identical to BBLC)
 static const NimBLEUUID UUID_BBLH_SERVICE(
@@ -18,7 +27,9 @@ static const NimBLEUUID UUID_BBLH_STATUS(
 );
 
 BleServerBBLH::BleServerBBLH()
-    : serverCallbacks_(*this),
+    : heartbeat_(BleHeartbeat::Role::SERVER, HEARTBEAT_INTERVAL_MS),
+      watchdog_(WATCHDOG_TIMEOUT_MS, WATCHDOG_WARN_MS, watchdogLog),
+      serverCallbacks_(*this),
       cmdCallbacks_(*this) {}
 
 void BleServerBBLH::begin() {
@@ -35,7 +46,16 @@ void BleServerBBLH::begin() {
 }
 
 void BleServerBBLH::loop() {
-    // Symmetry with BBLC. Nothing to run here for NimBLE server for now.
+    if (!isClientConnected()) {
+        return;
+    }
+
+    heartbeat_.update();
+    watchdog_.update();
+
+    if (watchdog_.isExpired()) {
+        handleWatchdogExpiry();
+    }
 }
 
 void BleServerBBLH::onStateChange(StateCallback cb) {
@@ -72,7 +92,7 @@ void BleServerBBLH::setupGatt() {
     // CMD: Write (client -> server)
     chrCmd_ = service_->createCharacteristic(
         UUID_BBLH_CMD,
-        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR
+        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::NOTIFY
     );
     chrCmd_->setCallbacks(&cmdCallbacks_);
 
@@ -89,6 +109,9 @@ void BleServerBBLH::setupGatt() {
 }
 
 void BleServerBBLH::startAdvertising() {
+    clientConnected_ = false;
+    hasConnHandle_ = false;
+
     NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
 
     adv->reset();
@@ -111,16 +134,24 @@ void BleServerBBLH::startAdvertising() {
 void BleServerBBLH::ServerCallbacks::onConnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo) {
     parent_.lastClientAddress_ = connInfo.getAddress();
     parent_.hasClientAddress_ = true;
+    parent_.hasConnHandle_ = true;
+    parent_.lastConnHandle_ = connInfo.getConnHandle();
+    parent_.clientConnected_ = true;
+
+    parent_.heartbeat_.resetTimers();
+    parent_.watchdog_.kick();
 
     ESP_LOGI(TAG, "Client connected from %s",
         parent_.lastClientAddress_.toString().c_str());
 
-    parent_.setState(BleState::CONNECTED);
+    parent_.setState(BleState::CLIENT_CONNECTED);
 }
 
 void BleServerBBLH::ServerCallbacks::onDisconnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo, int reason) {
     parent_.lastClientAddress_ = connInfo.getAddress();
     parent_.hasClientAddress_ = true;
+    parent_.clientConnected_ = false;
+    parent_.hasConnHandle_ = false;
 
     ESP_LOGW(TAG,
             "Client disconnected from %s (reason=%d)",
@@ -139,12 +170,46 @@ void BleServerBBLH::CmdCallbacks::onWrite(NimBLECharacteristic* pCharacteristic,
 
     if (value.size() == 0) return;
 
+    const uint8_t* data = reinterpret_cast<const uint8_t*>(value.data());
+    const size_t len = value.size();
+
+    if (BleHeartbeat::isPingPayload(data, len)) {
+        static const uint8_t PONG[] = {'P','O','N','G'};
+        parent_.notifyCommandCharacteristic(PONG, sizeof(PONG));
+        parent_.notifyStatus("PONG");
+        parent_.watchdog_.kick();
+        return;
+    }
+
     if (parent_.cmdCb_) {
-        parent_.cmdCb_(
-            reinterpret_cast<const uint8_t*>(value.data()),
-            value.size()
-        );
+        parent_.cmdCb_(data, len);
     }
 
     parent_.notifyStatus("CMD_RX");
+}
+
+bool BleServerBBLH::isClientConnected() const {
+    return clientConnected_ && server_ && server_->getConnectedCount() > 0;
+}
+
+void BleServerBBLH::handleWatchdogExpiry() {
+    ESP_LOGE(TAG, "Watchdog expired, disconnecting client");
+
+    if (server_ && hasConnHandle_) {
+        server_->disconnect(lastConnHandle_);
+    }
+
+    clientConnected_ = false;
+    hasConnHandle_ = false;
+
+    setState(BleState::DISCONNECTED);
+    startAdvertising();
+}
+
+bool BleServerBBLH::notifyCommandCharacteristic(const uint8_t* data, size_t len) {
+    if (!data || len == 0) return false;
+    if (!chrCmd_ || !server_ || !server_->getConnectedCount()) return false;
+
+    chrCmd_->setValue(data, len);
+    return chrCmd_->notify();
 }

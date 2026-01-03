@@ -3,23 +3,28 @@
 
 static const char* TAG = "BLE";
 
+static constexpr uint32_t HEARTBEAT_INTERVAL_MS = 3000;
+static constexpr uint32_t WATCHDOG_TIMEOUT_MS = 8000;
+static constexpr uint32_t WATCHDOG_WARN_MS = 2000;
+
+namespace {
+void watchdogLog(const char* msg) {
+    ESP_LOGW(TAG, "%s", msg);
+}
+}
+
 // UUIDs attendus cote BBLH
 static const NimBLEUUID BBLH_SERVICE_UUID("a1b2c3d4-0001-4000-8000-000000000001");
 static const NimBLEUUID BBLH_CMD_UUID("a1b2c3d4-0002-4000-8000-000000000001");
 static const NimBLEUUID BBLH_STATUS_UUID("a1b2c3d4-0003-4000-8000-000000000001");
 
-namespace {
-// Trampoline pour les notifications STATUS
-void statusNotifyTrampoline(NimBLERemoteCharacteristic* chr, uint8_t* data, size_t len, bool isNotify) {
-    BleClientBBLC::onStatusNotify(chr, data, len, isNotify);
-}
-}
-
 // ==========================
 // Constructor
 // ==========================
 BleClientBBLC::BleClientBBLC()
-    : scanCallbacks_(*this),
+    : heartbeat_(BleHeartbeat::Role::CLIENT, HEARTBEAT_INTERVAL_MS),
+      watchdog_(WATCHDOG_TIMEOUT_MS, WATCHDOG_WARN_MS, watchdogLog),
+      scanCallbacks_(*this),
       clientCallbacks_(*this) {}
 
 // ==========================
@@ -40,6 +45,23 @@ void BleClientBBLC::begin() {
 
 void BleClientBBLC::loop() {
     connectIfPending();
+
+    if (state_ == BleState::CONNECTED) {
+        heartbeat_.update();
+
+        if (heartbeat_.shouldSendPing()) {
+            static const uint8_t kPing[] = {'P','I','N','G'};
+            sendCommand(kPing, sizeof(kPing), false);
+        }
+
+        watchdog_.update();
+        if (watchdog_.isExpired()) {
+            ESP_LOGE(TAG, "Watchdog expired, disconnecting");
+            disconnect();
+            setState(BleState::DISCONNECTED);
+            startScan();
+        }
+    }
 }
 
 void BleClientBBLC::startScan() {
@@ -137,6 +159,8 @@ void BleClientBBLC::connectIfPending() {
         return;
     }
 
+    heartbeat_.resetTimers();
+    watchdog_.kick();
     setState(BleState::CONNECTED);
 }
 
@@ -256,7 +280,12 @@ bool BleClientBBLC::setupRemoteCharacteristics() {
     }
 
     if (chrStatus_->canNotify() || chrStatus_->canIndicate()) {
-        if (!chrStatus_->subscribe(true, statusNotifyTrampoline)) {
+        auto cb = std::bind(&BleClientBBLC::onStatusNotify, this,
+                            std::placeholders::_1,
+                            std::placeholders::_2,
+                            std::placeholders::_3,
+                            std::placeholders::_4);
+        if (!chrStatus_->subscribe(true, cb)) {
             ESP_LOGW(TAG, "Failed to subscribe to STATUS notifications");
         }
     } else {
@@ -269,6 +298,13 @@ bool BleClientBBLC::setupRemoteCharacteristics() {
 
 void BleClientBBLC::onStatusNotify(NimBLERemoteCharacteristic* chr, uint8_t* data, size_t len, bool isNotify) {
     (void)chr;
+
+    if (BleHeartbeat::isPongPayload(data, len)) {
+        watchdog_.kick();
+        ESP_LOGI(TAG, "PONG received");
+        return;
+    }
+
     ESP_LOGI(TAG, "STATUS %s (%u bytes): %.*s",
         isNotify ? "notify" : "indicate",
         static_cast<unsigned>(len),

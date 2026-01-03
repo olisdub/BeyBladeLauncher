@@ -5,6 +5,8 @@
 #include <NimBLEDevice.h>
 #include <functional>
 
+#include "ble/BleHeartbeat.h"
+#include "ble/BleWatchdog.h"
 // Uses the same enum as BBLC/BleStatus (important for LED and coherence)
 #include "ble/BleStatus.h"
 
@@ -18,7 +20,7 @@ public:
     BleServerBBLH();
 
     void begin();
-    void loop(); // currently empty, kept for symmetry and future evolution
+    void loop(); // heartbeat/watchdog processing
 
     void onStateChange(StateCallback cb);
     void onCommand(CommandCallback cb);
@@ -38,6 +40,9 @@ private:
 
     void setupGatt();
     void startAdvertising();
+    bool isClientConnected() const;
+    void handleWatchdogExpiry();
+    bool notifyCommandCharacteristic(const uint8_t* data, size_t len);
 
     // ====== NimBLE Callbacks ======
     class ServerCallbacks : public NimBLEServerCallbacks {
@@ -58,6 +63,9 @@ private:
     };
 
 private:
+    BleHeartbeat heartbeat_;
+    BleWatchdog watchdog_;
+
     BleState state_ = BleState::BOOT;
     StateCallback stateCb_;
     CommandCallback cmdCb_;
@@ -69,6 +77,9 @@ private:
     
     ServerCallbacks serverCallbacks_;
     CmdCallbacks cmdCallbacks_;
+    bool clientConnected_ = false;
+    bool hasConnHandle_ = false;
+    uint16_t lastConnHandle_ = 0;
     bool hasClientAddress_ = false;
     NimBLEAddress serverAddress_;
     NimBLEAddress lastClientAddress_;
