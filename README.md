@@ -125,3 +125,4 @@ All BLE transport and recovery decisions remain inside
 This design makes the BLE connection more robust while keeping
 the codebase maintainable and extensible.
 
+---
