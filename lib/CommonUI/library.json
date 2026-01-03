@@ -1,0 +1,13 @@
+{
+  "name": "CommonUI",
+  "version": "1.0.0",
+  "description": "Shared LED and BLE status helpers for BBLC and BBLH",
+  "frameworks": ["arduino"],
+  "platforms": ["espressif32"],
+  "dependencies": [
+    {
+      "name": "FastLED",
+      "version": "^3.10.3"
+    }
+  ]
+}
