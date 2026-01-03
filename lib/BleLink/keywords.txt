@@ -1,5 +1,0 @@
-BleLink	KEYWORD1
-BlePeripheralLink	KEYWORD1
-BleCentralLink	KEYWORD1
-BleStatusLed	KEYWORD1
-BleConnectionState	KEYWORD1
